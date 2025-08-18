@@ -83,6 +83,29 @@ class UserFeedback(Base):
     def __repr__(self):
         return f"<UserFeedback(course_code='{self.course_code}', rating={self.rating})>"
 
+class UWFlowData(Base):
+    """UWFlow course ratings and review data"""
+    __tablename__ = "uwflow_data"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_code = Column(String(20), unique=True, index=True, nullable=False)
+    rating = Column(Float)  # Overall rating 1-5
+    difficulty = Column(Float)  # Difficulty rating 1-5
+    workload = Column(Float)  # Workload rating 1-5  
+    usefulness = Column(Float)  # Usefulness rating 1-5
+    num_ratings = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    liked_percentage = Column(Float)  # Percentage of students who liked the course
+    professor_ratings = Column(Text)  # JSON string of professor ratings
+    
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    is_stale = Column(Boolean, default=False)  # Mark data as needing refresh
+    
+    def __repr__(self):
+        return f"<UWFlowData(course_code='{self.course_code}', rating={self.rating})>"
+
 # Database utility functions
 def create_tables():
     """Create all tables"""

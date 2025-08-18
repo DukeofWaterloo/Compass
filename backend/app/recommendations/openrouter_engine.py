@@ -11,6 +11,9 @@ from dataclasses import dataclass, asdict
 from openai import OpenAI
 from dotenv import load_dotenv
 
+# Import prerequisite validation
+from ..validation.prerequisite_validator import PrerequisiteValidator, ValidationResult
+
 # Load environment variables
 load_dotenv()
 
@@ -53,6 +56,20 @@ class CourseRecommendation:
     course_code: str
     confidence: float
     reasoning: str
+    prerequisite_status: str = "unknown"  # "satisfied", "missing", "unknown"
+    missing_prereqs: List[str] = None
+    difficulty_score: float = 0.0
+    
+    # UWFlow data
+    uwflow_rating: Optional[float] = None
+    uwflow_difficulty: Optional[float] = None
+    uwflow_workload: Optional[float] = None
+    uwflow_usefulness: Optional[float] = None
+    uwflow_reviews: int = 0
+    
+    def __post_init__(self):
+        if self.missing_prereqs is None:
+            self.missing_prereqs = []
 
 class OpenRouterAI:
     """OpenRouter AI client for course recommendations"""
@@ -72,23 +89,45 @@ class OpenRouterAI:
             api_key=self.api_key,
         )
         
+        # Initialize prerequisite validator
+        self.prereq_validator = PrerequisiteValidator()
+        
+        # Initialize UWFlow data manager
+        try:
+            from ..scraping.uwflow_data_manager import UWFlowDataManager
+            self.uwflow_manager = UWFlowDataManager()
+            logger.info("UWFlow data manager initialized")
+        except Exception as e:
+            self.uwflow_manager = None
+            logger.warning(f"UWFlow data manager not available: {e}")
+        
         logger.info(f"Initialized OpenRouter AI with model: {self.model}")
     
     def get_course_recommendations(
         self, 
         student_profile: StudentProfile, 
         available_courses: List[CourseInfo],
-        max_recommendations: int = 5
+        max_recommendations: int = 5,
+        include_courses_with_missing_prereqs: bool = False
     ) -> Tuple[List[CourseRecommendation], dict]:
-        """Get AI-powered course recommendations"""
+        """Get AI-powered course recommendations with prerequisite validation"""
         
         start_time = time.time()
         
-        # Create the AI prompt
-        prompt = self._create_recommendation_prompt(student_profile, available_courses, max_recommendations)
+        # Step 1: Filter courses by prerequisites (if requested)
+        eligible_courses = available_courses
+        
+        if not include_courses_with_missing_prereqs:
+            eligible_courses = self._filter_courses_by_prerequisites(
+                available_courses, 
+                student_profile
+            )
+        
+        # Step 2: Create the AI prompt
+        prompt = self._create_recommendation_prompt(student_profile, eligible_courses, max_recommendations)
         
         try:
-            # Call OpenRouter API
+            # Step 3: Call OpenRouter API
             completion = self.client.chat.completions.create(
                 extra_headers={
                     "HTTP-Referer": self.site_url,
@@ -109,9 +148,16 @@ class OpenRouterAI:
                 max_tokens=2000
             )
             
-            # Parse the response
+            # Step 4: Parse the response
             response_content = completion.choices[0].message.content
             recommendations = self._parse_ai_response(response_content)
+            
+            # Step 5: Enhance recommendations with prerequisite validation and UWFlow data
+            enhanced_recommendations = self._enhance_recommendations_with_validation(
+                recommendations,
+                available_courses,
+                student_profile
+            )
             
             # Calculate stats
             processing_time = time.time() - start_time
@@ -119,25 +165,34 @@ class OpenRouterAI:
                 "processing_time_ms": int(processing_time * 1000),
                 "model_used": self.model,
                 "courses_considered": len(available_courses),
-                "recommendations_generated": len(recommendations)
+                "eligible_courses": len(eligible_courses),
+                "recommendations_generated": len(enhanced_recommendations),
+                "prereq_filtering_enabled": not include_courses_with_missing_prereqs
             }
             
-            logger.info(f"Generated {len(recommendations)} recommendations in {stats['processing_time_ms']}ms")
+            logger.info(f"Generated {len(enhanced_recommendations)} recommendations in {stats['processing_time_ms']}ms")
             
-            return recommendations, stats
+            return enhanced_recommendations, stats
             
         except Exception as e:
             logger.error(f"OpenRouter API call failed: {e}")
             # Return fallback recommendations
-            fallback_recs = self._generate_fallback_recommendations(student_profile, available_courses, max_recommendations)
+            fallback_recs = self._generate_fallback_recommendations(student_profile, eligible_courses, max_recommendations)
+            enhanced_fallback = self._enhance_recommendations_with_validation(
+                fallback_recs,
+                available_courses, 
+                student_profile
+            )
             stats = {
                 "processing_time_ms": int((time.time() - start_time) * 1000),
                 "model_used": "fallback",
                 "courses_considered": len(available_courses),
-                "recommendations_generated": len(fallback_recs),
+                "eligible_courses": len(eligible_courses),
+                "recommendations_generated": len(enhanced_fallback),
+                "prereq_filtering_enabled": not include_courses_with_missing_prereqs,
                 "error": str(e)
             }
-            return fallback_recs, stats
+            return enhanced_fallback, stats
     
     def _create_recommendation_prompt(self, profile: StudentProfile, courses: List[CourseInfo], max_recs: int) -> str:
         """Create AI prompt for course recommendations"""
@@ -232,6 +287,90 @@ Ensure confidence is between 0.0 and 1.0, and reasoning explains WHY this course
         except Exception as e:
             logger.error(f"Error parsing AI response: {e}")
             return []
+    
+    def _filter_courses_by_prerequisites(self, courses: List[CourseInfo], student_profile: StudentProfile) -> List[CourseInfo]:
+        """Filter courses by prerequisite requirements"""
+        eligible_courses = []
+        
+        for course in courses:
+            validation = self.prereq_validator.validate_prerequisites(
+                course_prereqs=course.prerequisites or "",
+                completed_courses=student_profile.completed_courses,
+                student_year=student_profile.year,
+                student_program=student_profile.program
+            )
+            
+            if validation.is_satisfied:
+                eligible_courses.append(course)
+        
+        logger.info(f"Filtered {len(courses)} courses to {len(eligible_courses)} eligible courses")
+        return eligible_courses
+    
+    def _enhance_recommendations_with_validation(self, 
+                                               recommendations: List[CourseRecommendation],
+                                               all_courses: List[CourseInfo],
+                                               student_profile: StudentProfile) -> List[CourseRecommendation]:
+        """Enhance recommendations with prerequisite validation, difficulty scoring, and UWFlow data"""
+        
+        # Create course lookup
+        course_lookup = {course.code: course for course in all_courses}
+        
+        # Get UWFlow data for all recommended courses
+        course_codes = [rec.course_code for rec in recommendations]
+        uwflow_data = {}
+        
+        if self.uwflow_manager:
+            try:
+                uwflow_data = self.uwflow_manager.get_multiple_uwflow_data(course_codes)
+                logger.debug(f"Retrieved UWFlow data for {len(uwflow_data)}/{len(course_codes)} courses")
+            except Exception as e:
+                logger.warning(f"Failed to get UWFlow data: {e}")
+        
+        enhanced_recommendations = []
+        
+        for rec in recommendations:
+            course = course_lookup.get(rec.course_code)
+            if not course:
+                # Keep recommendation but mark as unknown
+                enhanced_recommendations.append(rec)
+                continue
+            
+            # Validate prerequisites
+            validation = self.prereq_validator.validate_prerequisites(
+                course_prereqs=course.prerequisites or "",
+                completed_courses=student_profile.completed_courses,
+                student_year=student_profile.year,
+                student_program=student_profile.program
+            )
+            
+            # Calculate difficulty score
+            difficulty_score = self.prereq_validator.get_course_difficulty_score(
+                course.code, 
+                course.prerequisites or ""
+            )
+            
+            # Get UWFlow data for this course
+            uwflow_course_data = uwflow_data.get(rec.course_code, {})
+            
+            # Create enhanced recommendation
+            enhanced_rec = CourseRecommendation(
+                course_code=rec.course_code,
+                confidence=rec.confidence,
+                reasoning=rec.reasoning,
+                prerequisite_status="satisfied" if validation.is_satisfied else "missing",
+                missing_prereqs=validation.missing_prereqs,
+                difficulty_score=difficulty_score,
+                # UWFlow data
+                uwflow_rating=uwflow_course_data.get('rating'),
+                uwflow_difficulty=uwflow_course_data.get('difficulty'),
+                uwflow_workload=uwflow_course_data.get('workload'),
+                uwflow_usefulness=uwflow_course_data.get('usefulness'),
+                uwflow_reviews=uwflow_course_data.get('review_count', 0)
+            )
+            
+            enhanced_recommendations.append(enhanced_rec)
+        
+        return enhanced_recommendations
     
     def _generate_fallback_recommendations(self, profile: StudentProfile, courses: List[CourseInfo], max_recs: int) -> List[CourseRecommendation]:
         """Generate simple rule-based recommendations as fallback"""
