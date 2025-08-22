@@ -15,6 +15,7 @@ sys.path.append(os.path.dirname(__file__))
 
 from app.models.database import get_db, Course
 from app.models.course import StudentProfile
+from uwaterloo_programs import is_valid_program, get_program_suggestions, UWATERLOO_PROGRAMS
 
 app = FastAPI(title="Simple Recommendations API")
 
@@ -58,17 +59,37 @@ async def get_courses():
     finally:
         db.close()
 
+@app.get("/api/v1/programs")
+async def get_programs():
+    """Get all available programs"""
+    return UWATERLOO_PROGRAMS
+
+@app.get("/api/v1/programs/search")
+async def search_programs(q: str = ""):
+    """Search for programs"""
+    return get_program_suggestions(q)
+
 @app.post("/api/v1/recommendations")
 async def get_simple_recommendations(profile: StudentProfile):
     """Get simple course recommendations"""
+    # Validate program
+    if not profile.program or not profile.program.strip():
+        raise HTTPException(status_code=400, detail="Program is required")
+    
+    if not is_valid_program(profile.program):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"'{profile.program}' is not a valid University of Waterloo program. Please select from the available programs."
+        )
+    
     db = next(get_db())
     try:
         # Get all available courses
         all_courses = db.query(Course).all()
         
-        # Filter out completed courses
-        completed_codes = [c.upper().replace(" ", " ") for c in (profile.completed_courses or [])]
-        available_courses = [c for c in all_courses if c.code not in completed_codes]
+        # Get favorite courses for similarity matching (don't filter them out)
+        favorite_codes = [c.upper().replace(" ", " ") for c in (profile.completed_courses or [])]
+        available_courses = all_courses  # Include all courses, including favorites
         
         # Filter by appropriate course levels based on student year
         def is_appropriate_level(course_level: int, student_year: int) -> bool:
@@ -106,7 +127,7 @@ async def get_simple_recommendations(profile: StudentProfile):
             # Boost score for program relevance
             if profile.program.lower() in course.title.lower() or profile.program.lower() in course.description.lower():
                 confidence_score += 0.2
-                reasoning_parts.append(f"directly relevant to {profile.program}")
+                reasoning_parts.append(f"directly relevant to your program")
             
             # Boost score for interests
             for interest in (profile.interests or []):
@@ -114,6 +135,16 @@ async def get_simple_recommendations(profile: StudentProfile):
                     confidence_score += 0.1
                     reasoning_parts.append(f"matches your interest in {interest}")
                     break
+            
+            # Boost score for similarity to favorite courses
+            if favorite_codes:
+                course_dept = course.code.split()[0] if ' ' in course.code else course.code[:2]
+                for fav_code in favorite_codes:
+                    fav_dept = fav_code.split()[0] if ' ' in fav_code else fav_code[:2]
+                    if course_dept == fav_dept and course.code != fav_code:
+                        confidence_score += 0.15
+                        reasoning_parts.append(f"similar to {fav_code} which you enjoyed")
+                        break
             
             # Boost for year-appropriate level (courses are already filtered by level)
             if profile.year >= 4 and course.level >= 400:

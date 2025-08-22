@@ -1,15 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   SparklesIcon, 
   UserIcon, 
   AcademicCapIcon, 
   PlusIcon,
-  XMarkIcon
+  XMarkIcon,
+  ChevronDownIcon,
+  CheckIcon
 } from '@heroicons/react/24/outline';
 import { getRecommendations } from '../utils/api.ts';
 import { StudentProfile, Recommendation } from '../types';
 import LoadingSpinner from '../components/LoadingSpinner.tsx';
 import ErrorMessage from '../components/ErrorMessage.tsx';
+import { searchPrograms, isValidProgram } from '../data/programs.ts';
 
 const RecommendationsPage: React.FC = () => {
   const [profile, setProfile] = useState<StudentProfile>({
@@ -25,6 +28,43 @@ const RecommendationsPage: React.FC = () => {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Program dropdown state
+  const [programQuery, setProgramQuery] = useState('');
+  const [programSuggestions, setProgramSuggestions] = useState<string[]>([]);
+  const [showProgramDropdown, setShowProgramDropdown] = useState(false);
+  const programInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Program dropdown effects
+  useEffect(() => {
+    const suggestions = searchPrograms(programQuery);
+    setProgramSuggestions(suggestions);
+  }, [programQuery]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowProgramDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleProgramInputChange = (value: string) => {
+    setProgramQuery(value);
+    setProfile(prev => ({ ...prev, program: value }));
+    setShowProgramDropdown(value.length > 0);
+  };
+
+  const selectProgram = (program: string) => {
+    setProgramQuery(program);
+    setProfile(prev => ({ ...prev, program }));
+    setShowProgramDropdown(false);
+    programInputRef.current?.blur();
+  };
 
   const addInterest = () => {
     if (currentInterest.trim() && !profile.interests.includes(currentInterest.trim())) {
@@ -62,7 +102,12 @@ const RecommendationsPage: React.FC = () => {
 
   const handleGetRecommendations = async () => {
     if (!profile.program.trim()) {
-      setError('Please enter your program');
+      setError('Please select your program');
+      return;
+    }
+    
+    if (!isValidProgram(profile.program)) {
+      setError('Please select a valid University of Waterloo program from the dropdown');
       return;
     }
 
@@ -114,17 +159,64 @@ const RecommendationsPage: React.FC = () => {
 
             <div className="space-y-6">
               {/* Program */}
-              <div>
+              <div className="relative" ref={dropdownRef}>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Program *
                 </label>
-                <input
-                  type="text"
-                  value={profile.program}
-                  onChange={(e) => setProfile(prev => ({...prev, program: e.target.value}))}
-                  placeholder="e.g., Computer Science, Software Engineering"
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                <div className="relative">
+                  <input
+                    ref={programInputRef}
+                    type="text"
+                    value={programQuery}
+                    onChange={(e) => handleProgramInputChange(e.target.value)}
+                    onFocus={() => setShowProgramDropdown(programQuery.length > 0)}
+                    placeholder="Search for your UWaterloo program..."
+                    className={`w-full px-4 py-3 pr-10 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      profile.program && !isValidProgram(profile.program) 
+                        ? 'border-red-300 bg-red-50' 
+                        : 'border-gray-300'
+                    }`}
+                  />
+                  <ChevronDownIcon className="absolute right-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                  
+                  {profile.program && isValidProgram(profile.program) && (
+                    <CheckIcon className="absolute right-8 top-1/2 transform -translate-y-1/2 h-5 w-5 text-green-500" />
+                  )}
+                </div>
+
+                {/* Program Dropdown */}
+                {showProgramDropdown && programSuggestions.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                    {programSuggestions.map((program, index) => (
+                      <button
+                        key={index}
+                        onClick={() => selectProgram(program)}
+                        className="w-full text-left px-4 py-3 hover:bg-blue-50 focus:bg-blue-50 focus:outline-none first:rounded-t-lg last:rounded-b-lg border-b border-gray-100 last:border-b-0"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-900">{program}</span>
+                          {profile.program === program && (
+                            <CheckIcon className="h-4 w-4 text-blue-600" />
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* No programs found */}
+                {showProgramDropdown && programQuery.length > 2 && programSuggestions.length === 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg p-4 text-gray-500 text-center">
+                    No programs found. Try a different search term.
+                  </div>
+                )}
+
+                {/* Invalid program warning */}
+                {profile.program && !isValidProgram(profile.program) && programQuery === profile.program && (
+                  <p className="mt-2 text-sm text-red-600">
+                    Please select a valid University of Waterloo program from the dropdown.
+                  </p>
+                )}
               </div>
 
               {/* Year */}
@@ -204,18 +296,21 @@ const RecommendationsPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Completed Courses */}
+              {/* Favourite Courses */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Completed Courses
+                  Favourite Courses
                 </label>
+                <p className="text-sm text-gray-500 mb-3">
+                  Add courses you enjoyed to get similar recommendations
+                </p>
                 <div className="flex space-x-2 mb-3">
                   <input
                     type="text"
                     value={currentCourse}
                     onChange={(e) => setCurrentCourse(e.target.value)}
                     onKeyPress={(e) => e.key === 'Enter' && addCourse()}
-                    placeholder="e.g., CS135, MATH137"
+                    placeholder="e.g., CS135, MATH137, ENGL109"
                     className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   <button
@@ -229,12 +324,12 @@ const RecommendationsPage: React.FC = () => {
                   {profile.completed_courses.map((course, index) => (
                     <span
                       key={index}
-                      className="inline-flex items-center px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm"
+                      className="inline-flex items-center px-3 py-1 bg-purple-100 text-purple-800 rounded-full text-sm"
                     >
                       {course}
                       <button
                         onClick={() => removeCourse(course)}
-                        className="ml-2 text-green-600 hover:text-green-800"
+                        className="ml-2 text-purple-600 hover:text-purple-800"
                       >
                         <XMarkIcon className="h-4 w-4" />
                       </button>
@@ -284,9 +379,9 @@ const RecommendationsPage: React.FC = () => {
                 <div className="bg-blue-50 p-4 rounded-lg text-left">
                   <h4 className="font-semibold text-blue-900 mb-2">Tips for better recommendations:</h4>
                   <ul className="text-sm text-blue-800 space-y-1">
-                    <li>• Be specific about your program (e.g., "Computer Science", not just "CS")</li>
+                    <li>• Be specific about your program (e.g., "Computer Science (CS)")</li>
                     <li>• Add your interests (algorithms, AI, web dev, etc.)</li>
-                    <li>• List completed courses to avoid duplicates</li>
+                    <li>• List courses you enjoyed to get similar recommendations</li>
                     <li>• Include your GPA for difficulty-appropriate suggestions</li>
                   </ul>
                 </div>
