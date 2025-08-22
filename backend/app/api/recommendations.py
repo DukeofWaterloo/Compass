@@ -3,7 +3,7 @@ Course recommendation endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 import logging
 import json
@@ -42,14 +42,18 @@ async def get_recommendations(
         if not relevant_courses:
             raise HTTPException(status_code=404, detail="No relevant courses found for this profile")
         
-        # For now, always use fallback to ensure functionality
-        # TODO: Fix AI timeout issues
-        if False and AI_AVAILABLE:  # Temporarily disabled
-            # Use AI engine with prerequisite validation
-            recommendations = await _get_ai_recommendations(profile, relevant_courses, include_missing_prereqs)
+        # Use AI recommendations with fallback
+        if AI_AVAILABLE:
+            try:
+                # Use AI engine with prerequisite validation
+                logger.info("Using AI recommendations")
+                recommendations = await _get_ai_recommendations(profile, relevant_courses, include_missing_prereqs)
+            except Exception as e:
+                logger.warning(f"AI recommendations failed: {e}, using fallback")
+                recommendations = _get_fallback_recommendations(profile, relevant_courses)
         else:
             # Use fallback recommendations
-            logger.info("Using fallback recommendations (AI disabled)")
+            logger.info("Using fallback recommendations (AI not available)")
             recommendations = _get_fallback_recommendations(profile, relevant_courses)
         
         return recommendations
@@ -198,13 +202,32 @@ def _get_relevant_courses_for_profile(profile: StudentProfile, db: Session) -> L
         dept_courses = course_manager.get_courses_by_department(dept, db)
         # Filter by level
         level_filtered = [c for c in dept_courses if c.level in appropriate_levels]
-        # Remove completed/current courses
+        # Remove completed/current courses and smart filtering for same department
         excluded_courses = (profile.completed_courses or []) + (profile.current_courses or [])
-        available_courses = [c for c in level_filtered if c.code not in excluded_courses]
+        available_courses = []
+        
+        for course in level_filtered:
+            if course.code not in excluded_courses:
+                # Smart filtering: only restrict lower-level courses within the student's program department
+                should_exclude = False
+                student_program_dept = _get_primary_department(profile.program)
+                
+                # Only apply department-level restrictions to courses in the student's main program
+                if course.department == student_program_dept:
+                    for completed_course in (profile.completed_courses or []):
+                        if completed_course.startswith(course.department):
+                            # Extract level of completed course
+                            completed_level = _extract_course_level(completed_course)
+                            if completed_level and completed_level >= course.level:
+                                should_exclude = True
+                                break
+                
+                if not should_exclude:
+                    available_courses.append(course)
         all_courses.extend(available_courses)
     
     # Limit to reasonable number for AI processing
-    return all_courses[:50]
+    return all_courses[:30]
 
 def _get_relevant_departments(program: str) -> List[str]:
     """Get departments relevant to a program"""
@@ -232,15 +255,53 @@ def _get_relevant_departments(program: str) -> List[str]:
     return ['CS', 'MATH', 'ENGL', 'ENVS', 'BET', 'ECON']
 
 def _get_appropriate_levels(year: int) -> List[int]:
-    """Get appropriate course levels for student year"""
+    """Get appropriate course levels for student year - more flexible for electives"""
     level_mapping = {
-        1: [100, 200, 300],  # More lenient
-        2: [100, 200, 300, 400],  # More lenient  
-        3: [200, 300, 400],
-        4: [300, 400],
-        5: [400]  # Graduate
+        1: [100, 200],  # 1st years: 100-200 level
+        2: [100, 200, 300],  # 2nd years: can take electives from any level
+        3: [100, 200, 300, 400],  # 3rd years: can take electives from any level
+        4: [100, 200, 300, 400],  # 4th years: can take electives from any level (like ENVS 200!)
+        5: [100, 200, 300, 400, 500]  # Graduate: any level
     }
     return level_mapping.get(year, [100, 200, 300])
+
+def _extract_course_level(course_code: str) -> Optional[int]:
+    """Extract course level from course code (e.g., ECE 240 -> 200)"""
+    import re
+    match = re.search(r'(\d+)', course_code)
+    if match:
+        number = int(match.group(1))
+        # Convert to level (240 -> 200, 135 -> 100)
+        return (number // 100) * 100
+    return None
+
+def _get_primary_department(program: str) -> Optional[str]:
+    """Extract primary department code from program name"""
+    program_lower = program.lower()
+    
+    # Map program names to primary departments
+    primary_dept_mapping = {
+        'electrical': 'ECE',
+        'computer engineering': 'ECE',
+        'computer science': 'CS',
+        'software engineering': 'SE',
+        'mathematics': 'MATH',
+        'mechanical': 'ME',
+        'chemical': 'CHE',
+        'civil': 'CIVE',
+        'biomedical': 'BME',
+        'systems design': 'SYDE',
+        'nanotechnology': 'NANO',
+        'management': 'MSCI',
+        'environmental': 'ENVE',
+        'geological': 'GEOE'
+    }
+    
+    for keyword, dept in primary_dept_mapping.items():
+        if keyword in program_lower:
+            return dept
+    
+    return None  # No restrictions for programs we can't map
 
 async def _get_ai_recommendations(profile: StudentProfile, courses: List[Course], include_missing_prereqs: bool = False) -> List[Recommendation]:
     """Get AI-powered recommendations with prerequisite validation"""
@@ -274,6 +335,10 @@ async def _get_ai_recommendations(profile: StudentProfile, courses: List[Course]
         if ai_rec.course_code in course_dict:
             course = course_dict[ai_rec.course_code]
             
+            # Skip courses with missing prerequisites if not requested
+            if not include_missing_prereqs and ai_rec.prerequisite_status == "missing":
+                continue
+            
             # Enhanced reasoning that includes prerequisite info
             enhanced_reasoning = ai_rec.reasoning
             if ai_rec.prerequisite_status == "missing" and ai_rec.missing_prereqs:
@@ -292,8 +357,23 @@ async def _get_ai_recommendations(profile: StudentProfile, courses: List[Course]
                 if ai_rec.uwflow_reviews > 0:
                     enhanced_reasoning += f" ({ai_rec.uwflow_reviews} reviews)"
             
+            # Convert SQLAlchemy Course to Pydantic Course
+            from app.models.course import Course as PydanticCourse
+            pydantic_course = PydanticCourse(
+                code=course.code,
+                title=course.title,
+                description=course.description,
+                credits=course.credits,
+                prerequisites=course.prerequisites,
+                corequisites=course.corequisites,
+                antirequisites=course.antirequisites,
+                terms_offered=[],  # Simplified for now
+                department=course.department,
+                level=course.level
+            )
+            
             recommendation = Recommendation(
-                course=course,
+                course=pydantic_course,
                 confidence=ai_rec.confidence,
                 reasoning=enhanced_reasoning
             )

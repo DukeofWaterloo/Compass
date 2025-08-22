@@ -198,7 +198,7 @@ class OpenRouterAI:
         """Create AI prompt for course recommendations"""
         
         # Limit courses to avoid token limits
-        limited_courses = courses[:30]
+        limited_courses = courses[:20]
         
         courses_json = []
         for course in limited_courses:

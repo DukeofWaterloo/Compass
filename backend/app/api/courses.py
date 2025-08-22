@@ -2,62 +2,69 @@
 Course data endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from typing import List, Optional
-from app.models.course import Course
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+import json
+
+from app.models.course import Course as PydanticCourse
+from app.models.database import Course as DBCourse, get_db
 
 router = APIRouter(tags=["courses"])
 
-# TODO: Replace with actual database/scraping
-MOCK_COURSES = [
-    Course(
-        code="CS 135",
-        title="Designing Functional Programs", 
-        description="An introduction to the fundamentals of computer science through the application of elementary programming patterns and the design of algorithms.",
-        credits=0.5,
-        prerequisites="None",
-        terms_offered=["Fall", "Winter"],
-        department="CS",
-        level=100
-    ),
-    Course(
-        code="ECE 240",
-        title="Electronic Circuits 1",
-        description="Introduction to electronic signal processing; second-order circuits; operational amplifier circuits.",
-        credits=0.5,
-        prerequisites="ECE 106, 140, MATH 119",
-        terms_offered=["Fall", "Winter"],
-        department="ECE", 
-        level=200
+def db_course_to_pydantic(db_course: DBCourse) -> PydanticCourse:
+    """Convert database course to Pydantic model"""
+    terms_offered = []
+    if db_course.terms_offered:
+        try:
+            terms_offered = json.loads(db_course.terms_offered)
+        except (json.JSONDecodeError, TypeError):
+            terms_offered = []
+    
+    return PydanticCourse(
+        code=db_course.code,
+        title=db_course.title,
+        description=db_course.description,
+        credits=db_course.credits,
+        prerequisites=db_course.prerequisites,
+        corequisites=db_course.corequisites,
+        antirequisites=db_course.antirequisites,
+        terms_offered=terms_offered,
+        department=db_course.department,
+        level=db_course.level
     )
-]
 
-@router.get("/courses", response_model=List[Course])
+@router.get("/courses", response_model=List[PydanticCourse])
 async def get_courses(
     department: Optional[str] = Query(None, description="Filter by department (e.g., CS, ECE)"),
     level: Optional[int] = Query(None, description="Filter by course level (100, 200, 300, 400)"),
-    limit: int = Query(50, description="Maximum number of courses to return")
+    limit: int = Query(50, description="Maximum number of courses to return"),
+    db: Session = Depends(get_db)
 ):
     """Get list of courses with optional filtering"""
-    courses = MOCK_COURSES.copy()
+    query = db.query(DBCourse).filter(DBCourse.is_active == True)
     
     if department:
-        courses = [c for c in courses if c.department.upper() == department.upper()]
+        query = query.filter(DBCourse.department.ilike(f"{department}%"))
     
     if level:
-        courses = [c for c in courses if c.level == level]
+        query = query.filter(DBCourse.level == level)
     
-    return courses[:limit]
+    db_courses = query.limit(limit).all()
+    return [db_course_to_pydantic(course) for course in db_courses]
 
-@router.get("/courses/{course_code}", response_model=Course)
-async def get_course(course_code: str):
+@router.get("/courses/{course_code}", response_model=PydanticCourse)
+async def get_course(course_code: str, db: Session = Depends(get_db)):
     """Get specific course by code"""
-    course = next((c for c in MOCK_COURSES if c.code == course_code), None)
+    db_course = db.query(DBCourse).filter(
+        and_(DBCourse.code == course_code, DBCourse.is_active == True)
+    ).first()
     
-    if not course:
+    if not db_course:
         raise HTTPException(status_code=404, detail="Course not found")
     
-    return course
+    return db_course_to_pydantic(db_course)
 
 @router.get("/departments")
 async def get_departments():
