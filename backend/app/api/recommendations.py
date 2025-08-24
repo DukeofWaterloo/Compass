@@ -25,16 +25,35 @@ except Exception as e:
     AI_AVAILABLE = False
     logger.warning(f"AI engine unavailable, using fallback: {e}")
 
-# Initialize vector recommendation engine
+# Initialize vector recommendation engines (try Qwen first, fallback to OpenAI)
+VECTOR_AVAILABLE = False
+QWEN_AVAILABLE = False
+vector_engine = None
+
 try:
-    from app.vector_engine.recommendation_engine import MultiDimensionalRecommendationEngine, RecommendationMode, RecommendationContext
-    from app.vector_engine.similarity_search import VectorSimilarityEngine
-    vector_engine = MultiDimensionalRecommendationEngine()
-    VECTOR_AVAILABLE = True
-    logger.info("Vector recommendation engine initialized successfully")
+    from app.vector_engine.qwen_similarity_search import QwenSimilarityEngine, RecommendationContext
+    qwen_engine = QwenSimilarityEngine()
+    if qwen_engine.embeddings_array is not None:
+        vector_engine = qwen_engine
+        QWEN_AVAILABLE = True
+        VECTOR_AVAILABLE = True
+        logger.info("Qwen vector recommendation engine initialized successfully")
+    else:
+        logger.info("Qwen embeddings not found, trying OpenAI engine...")
 except Exception as e:
-    VECTOR_AVAILABLE = False
-    logger.warning(f"Vector engine unavailable: {e}")
+    logger.info(f"Qwen engine unavailable: {e}, trying OpenAI engine...")
+
+if not VECTOR_AVAILABLE:
+    try:
+        from app.vector_engine.recommendation_engine import MultiDimensionalRecommendationEngine, RecommendationMode, RecommendationContext
+        from app.vector_engine.similarity_search import VectorSimilarityEngine
+        openai_engine = MultiDimensionalRecommendationEngine()
+        vector_engine = openai_engine
+        VECTOR_AVAILABLE = True
+        logger.info("OpenAI vector recommendation engine initialized successfully")
+    except Exception as e:
+        VECTOR_AVAILABLE = False
+        logger.warning(f"No vector engines available: {e}")
 
 course_manager = CourseDataManager()
 
@@ -472,17 +491,9 @@ def _get_fallback_explanation(course: Course, profile: StudentProfile) -> dict:
     }
 
 async def _get_vector_recommendations(profile: StudentProfile, mode_str: str, db: Session) -> List[Recommendation]:
-    """Get recommendations using vector similarity engine"""
+    """Get recommendations using vector similarity engine (Qwen or OpenAI)"""
     
     try:
-        # Parse recommendation mode
-        mode_mapping = {
-            "basic": RecommendationMode.BASIC,
-            "advanced": RecommendationMode.ADVANCED,
-            "super_advanced": RecommendationMode.SUPER_ADVANCED
-        }
-        mode = mode_mapping.get(mode_str.lower(), RecommendationMode.ADVANCED)
-        
         # Create recommendation context
         context = RecommendationContext(
             student_year=profile.year,
@@ -492,56 +503,121 @@ async def _get_vector_recommendations(profile: StudentProfile, mode_str: str, db
             gpa=profile.gpa
         )
         
-        # Generate vector recommendations
-        vector_recommendations = vector_engine.generate_recommendations(
-            context=context,
-            mode=mode,
-            top_k=10
-        )
+        if QWEN_AVAILABLE:
+            # Use Qwen similarity engine directly
+            logger.info(f"Using Qwen vector recommendations")
+            vector_recommendations = vector_engine.get_recommendations_for_student(context, top_k=10)
+            
+            # Convert to API format
+            recommendations = []
+            for vector_rec in vector_recommendations:
+                # Get full course from database
+                course = _get_course_from_db(vector_rec.course_code)
+                if not course:
+                    continue
+                
+                # Convert SQLAlchemy Course to Pydantic Course
+                from app.models.course import Course as PydanticCourse
+                pydantic_course = PydanticCourse(
+                    code=course.code,
+                    title=course.title,
+                    description=course.description,
+                    credits=course.credits,
+                    prerequisites=course.prerequisites,
+                    corequisites=course.corequisites,
+                    antirequisites=course.antirequisites,
+                    terms_offered=[],  # Simplified for now
+                    department=course.department,
+                    level=course.level
+                )
+                
+                # Create reasoning
+                reasoning = f"Recommended based on semantic similarity to your interests and favorite courses. "
+                reasoning += f"This {course.department} course at level {course.level} matches your academic profile."
+                
+                recommendation = Recommendation(
+                    course=pydantic_course,
+                    confidence=min(0.95, vector_rec.similarity_score),
+                    reasoning=reasoning
+                )
+                recommendations.append(recommendation)
+            
+            logger.info(f"Generated {len(recommendations)} Qwen vector recommendations")
+            return recommendations
         
-        if not vector_recommendations:
-            logger.warning("Vector engine returned no recommendations")
-            return []
-        
-        # Convert to API format
-        recommendations = []
-        for vector_rec in vector_recommendations:
-            # Convert SQLAlchemy Course to Pydantic Course
-            from app.models.course import Course as PydanticCourse
-            pydantic_course = PydanticCourse(
-                code=vector_rec.course.code,
-                title=vector_rec.course.title,
-                description=vector_rec.course.description,
-                credits=vector_rec.course.credits,
-                prerequisites=vector_rec.course.prerequisites,
-                corequisites=vector_rec.course.corequisites,
-                antirequisites=vector_rec.course.antirequisites,
-                terms_offered=[],  # Simplified for now
-                department=vector_rec.course.department,
-                level=vector_rec.course.level
+        else:
+            # Use OpenAI multi-dimensional engine
+            # Parse recommendation mode
+            from app.vector_engine.recommendation_engine import RecommendationMode
+            mode_mapping = {
+                "basic": RecommendationMode.BASIC,
+                "advanced": RecommendationMode.ADVANCED,
+                "super_advanced": RecommendationMode.SUPER_ADVANCED
+            }
+            mode = mode_mapping.get(mode_str.lower(), RecommendationMode.ADVANCED)
+            
+            logger.info(f"Using OpenAI vector recommendations (mode: {mode.value})")
+            vector_recommendations = vector_engine.generate_recommendations(
+                context=context,
+                mode=mode,
+                top_k=10
             )
             
-            # Create enhanced reasoning with multi-dimensional scores
-            enhanced_reasoning = vector_rec.reasoning
-            if mode != RecommendationMode.BASIC:
-                score_details = f" (Similarity: {vector_rec.similarity_score:.2f}"
-                if vector_rec.serendipity_factor > 0.1:
-                    score_details += f", Discovery: {vector_rec.serendipity_factor:.2f}"
-                if vector_rec.academic_progression > 0.1:
-                    score_details += f", Progression: {vector_rec.academic_progression:.2f}"
-                score_details += ")"
-                enhanced_reasoning += score_details
+            if not vector_recommendations:
+                logger.warning("OpenAI vector engine returned no recommendations")
+                return []
             
-            recommendation = Recommendation(
-                course=pydantic_course,
-                confidence=vector_rec.confidence,
-                reasoning=enhanced_reasoning
-            )
-            recommendations.append(recommendation)
-        
-        logger.info(f"Generated {len(recommendations)} vector recommendations using {mode.value} mode")
-        return recommendations
+            # Convert to API format
+            recommendations = []
+            for vector_rec in vector_recommendations:
+                # Convert SQLAlchemy Course to Pydantic Course
+                from app.models.course import Course as PydanticCourse
+                pydantic_course = PydanticCourse(
+                    code=vector_rec.course.code,
+                    title=vector_rec.course.title,
+                    description=vector_rec.course.description,
+                    credits=vector_rec.course.credits,
+                    prerequisites=vector_rec.course.prerequisites,
+                    corequisites=vector_rec.course.corequisites,
+                    antirequisites=vector_rec.course.antirequisites,
+                    terms_offered=[],  # Simplified for now
+                    department=vector_rec.course.department,
+                    level=vector_rec.course.level
+                )
+                
+                # Create enhanced reasoning with multi-dimensional scores
+                enhanced_reasoning = vector_rec.reasoning
+                if mode != RecommendationMode.BASIC:
+                    score_details = f" (Similarity: {vector_rec.similarity_score:.2f}"
+                    if hasattr(vector_rec, 'serendipity_factor') and vector_rec.serendipity_factor > 0.1:
+                        score_details += f", Discovery: {vector_rec.serendipity_factor:.2f}"
+                    if hasattr(vector_rec, 'academic_progression') and vector_rec.academic_progression > 0.1:
+                        score_details += f", Progression: {vector_rec.academic_progression:.2f}"
+                    score_details += ")"
+                    enhanced_reasoning += score_details
+                
+                recommendation = Recommendation(
+                    course=pydantic_course,
+                    confidence=vector_rec.confidence,
+                    reasoning=enhanced_reasoning
+                )
+                recommendations.append(recommendation)
+            
+            logger.info(f"Generated {len(recommendations)} OpenAI vector recommendations using {mode.value} mode")
+            return recommendations
         
     except Exception as e:
         logger.error(f"Vector recommendation generation failed: {e}")
         raise
+
+def _get_course_from_db(course_code: str):
+    """Get full course object from database"""
+    try:
+        with SessionLocal() as db:
+            return db.query(Course).filter(
+                Course.code == course_code,
+                Course.is_active == True
+            ).first()
+    except Exception as e:
+        logger.error(f"Failed to get course {course_code}: {e}")
+        return None
