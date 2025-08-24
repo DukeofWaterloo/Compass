@@ -39,6 +39,9 @@ def check_dependencies():
             if package == 'faiss-cpu':
                 import faiss
                 package_name = 'faiss'
+            elif package == 'scikit-learn':
+                import sklearn
+                package_name = 'sklearn'
             else:
                 package_name = package.replace('-', '_')
             
