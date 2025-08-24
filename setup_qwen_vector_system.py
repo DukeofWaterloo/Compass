@@ -50,7 +50,7 @@ def check_dependencies():
             missing_packages.append(package)
     
     # Special handling for FAISS (optional)
-    if 'faiss-cpu' in [p for p, _ in required_packages if p in [pkg for pkg, _ in missing_packages]]:
+    if 'faiss-cpu' in missing_packages:
         print("  ⚠️  FAISS is optional - will use sklearn for similarity search")
     
     if missing_packages and not all(pkg == 'faiss-cpu' for pkg in missing_packages):
