@@ -15,7 +15,7 @@ def print_banner():
     """Print setup banner"""
     print("=" * 70)
     print("🚀 COMPASS Qwen Vector Recommendation System Setup")
-    print("   Using Qwen3-Embedding-8B for local embeddings")
+    print("   Using Qwen3-Embedding-0.6B for local embeddings")
     print("=" * 70)
     print()
 
@@ -119,9 +119,9 @@ def check_database():
 
 def download_qwen_model():
     """Check if Qwen model needs to be downloaded"""
-    print("🤖 Checking Qwen3-Embedding-8B model...")
+    print("🤖 Checking Qwen3-Embedding-0.6B model...")
     
-    model_name = "Qwen/Qwen3-Embedding-8B"
+    model_name = "Qwen/Qwen3-Embedding-0.6B"
     
     try:
         from transformers import AutoTokenizer, AutoModel
@@ -136,20 +136,20 @@ def download_qwen_model():
         print("  🔄 Loading model config...")
         model = AutoModel.from_pretrained(model_name, torch_dtype=torch.float16)
         
-        print("  ✅ Qwen3-Embedding-8B model is ready")
+        print("  ✅ Qwen3-Embedding-0.6B model is ready")
         return True
         
     except Exception as e:
         print(f"  ❌ Model download/check failed: {e}")
         print("  💡 This might be due to network issues or insufficient disk space")
-        print("  💡 The model is ~5GB and will be downloaded to ~/.cache/huggingface/")
+        print("  💡 The model is ~2GB and will be downloaded to ~/.cache/huggingface/")
         return False
     
     print()
 
 def generate_qwen_embeddings(device_info: dict):
     """Generate course embeddings using Qwen"""
-    print("🧠 Generating course embeddings with Qwen3-Embedding-8B...")
+    print("🧠 Generating course embeddings with Qwen3-Embedding-0.6B...")
     
     # Check if embeddings already exist
     embeddings_file = "qwen_course_embeddings.json"
@@ -186,9 +186,9 @@ def generate_qwen_embeddings(device_info: dict):
         print(f"     This will process all courses in batches of {generator.batch_size}")
         
         if device_info['recommended_device'] == 'cpu':
-            print("     ⏱️  CPU inference may take 30-60 minutes")
+            print("     ⏱️  CPU inference may take 15-30 minutes (0.6B model is faster!)")
         else:
-            print("     ⏱️  GPU inference should take 10-20 minutes")
+            print("     ⏱️  GPU inference should take 5-10 minutes (0.6B model is faster!)")
         
         stats = generator.process_all_courses(
             save_to_file=embeddings_file,
@@ -263,7 +263,7 @@ def create_qwen_test_script():
     
     test_script_content = '''#!/usr/bin/env python3
 """
-Test script for COMPASS Qwen vector recommendations
+Test script for COMPASS Qwen3-Embedding-0.6B vector recommendations
 """
 
 import sys
@@ -384,15 +384,15 @@ def print_next_steps():
     print("  4. 🔧 Frontend integration: Update API calls to use vector parameters")
     print()
     print("📋 System Features:")
-    print("  - 🧠 Qwen3-Embedding-8B for high-quality semantic understanding")
+    print("  - 🧠 Qwen3-Embedding-0.6B for fast, high-quality semantic understanding")
     print("  - 🚀 FAISS for millisecond similarity search (if available)")
     print("  - 📊 K-means clustering for topic discovery")
     print("  - 🎯 Multi-dimensional scoring algorithm")
     print("  - 🔄 Progressive recommendation modes")
     print()
     print("⚡ Performance Notes:")
-    print("  - GPU: ~10-20 minutes for embedding generation")
-    print("  - CPU: ~30-60 minutes for embedding generation")
+    print("  - GPU: ~5-10 minutes for embedding generation (0.6B is fast!)")
+    print("  - CPU: ~15-30 minutes for embedding generation (0.6B is fast!)")
     print("  - Search: <100ms per query after embeddings are loaded")
     print()
     
