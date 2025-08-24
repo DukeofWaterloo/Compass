@@ -10,7 +10,7 @@ import {
 // Create axios instance with base configuration
 const api = axios.create({
   baseURL: process.env.REACT_APP_API_URL || 'http://localhost:8000',
-  timeout: 60000, // Increase timeout for AI operations
+  timeout: 90000, // 90 seconds for AI operations
   headers: {
     'Content-Type': 'application/json',
   },
@@ -75,7 +75,8 @@ export const getRecommendations = async (
   includeMissingPrereqs: boolean = false
 ): Promise<Recommendation[]> => {
   const response = await api.post('/api/v1/recommendations', profile, {
-    params: { include_missing_prereqs: includeMissingPrereqs }
+    params: { include_missing_prereqs: includeMissingPrereqs },
+    timeout: 120000 // 2 minutes for AI recommendations
   });
   return response.data;
 };

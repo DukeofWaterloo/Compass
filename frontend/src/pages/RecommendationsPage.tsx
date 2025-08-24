@@ -122,7 +122,7 @@ const RecommendationsPage: React.FC = () => {
       console.error('Recommendations error:', err);
       
       if (err.code === 'ECONNABORTED') {
-        setError('Request timed out. The AI is working hard but taking longer than usual. Please try again.');
+        setError('Request timed out. AI recommendations usually take 15-30 seconds. The server may be busy - please try again.');
       } else if (err.response?.status === 404) {
         setError('No relevant courses found for your profile. Try adjusting your program or year.');
       } else if (err.response?.status >= 500) {
@@ -224,17 +224,28 @@ const RecommendationsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Current Year
                 </label>
-                <select
-                  value={profile.year}
-                  onChange={(e) => setProfile(prev => ({...prev, year: parseInt(e.target.value)}))}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value={1}>1st Year</option>
-                  <option value={2}>2nd Year</option>
-                  <option value={3}>3rd Year</option>
-                  <option value={4}>4th Year</option>
-                  <option value={5}>5th Year+</option>
-                </select>
+                <div className="grid grid-cols-5 gap-2">
+                  {[
+                    { value: 1, label: '1st Year' },
+                    { value: 2, label: '2nd Year' },
+                    { value: 3, label: '3rd Year' },
+                    { value: 4, label: '4th Year' },
+                    { value: 5, label: '5th Year+' }
+                  ].map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setProfile(prev => ({...prev, year: value}))}
+                      className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                        profile.year === value
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* GPA */}
@@ -347,7 +358,7 @@ const RecommendationsPage: React.FC = () => {
                 {loading ? (
                   <div className="flex items-center justify-center space-x-2">
                     <LoadingSpinner size="sm" />
-                    <span>Getting Recommendations...</span>
+                    <span>AI analyzing your profile (15-30s)...</span>
                   </div>
                 ) : (
                   <div className="flex items-center justify-center space-x-2">
@@ -394,16 +405,16 @@ const RecommendationsPage: React.FC = () => {
                   <div key={index} className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors">
                     <div className="flex items-start justify-between mb-2">
                       <div>
-                        <h3 className="font-bold text-lg text-gray-900">{rec.course_code}</h3>
-                        <p className="text-gray-600">{rec.title}</p>
+                        <h3 className="font-bold text-lg text-gray-900">{rec.course.code}</h3>
+                        <p className="text-gray-600">{rec.course.title}</p>
                       </div>
                       <div className="text-right">
                         <div className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
-                          {Math.round(rec.confidence_score * 100)}% match
+                          {Math.round(rec.confidence * 100)}% match
                         </div>
                       </div>
                     </div>
-                    <p className="text-gray-700 mb-3">{rec.description}</p>
+                    <p className="text-gray-700 mb-3">{rec.course.description}</p>
                     <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-3 rounded-lg">
                       <p className="font-medium text-gray-900 mb-1">Why recommended:</p>
                       <p className="text-gray-700 text-sm">{rec.reasoning}</p>

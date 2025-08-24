@@ -25,17 +25,43 @@ except Exception as e:
     AI_AVAILABLE = False
     logger.warning(f"AI engine unavailable, using fallback: {e}")
 
+# Initialize vector recommendation engine
+try:
+    from app.vector_engine.recommendation_engine import MultiDimensionalRecommendationEngine, RecommendationMode, RecommendationContext
+    from app.vector_engine.similarity_search import VectorSimilarityEngine
+    vector_engine = MultiDimensionalRecommendationEngine()
+    VECTOR_AVAILABLE = True
+    logger.info("Vector recommendation engine initialized successfully")
+except Exception as e:
+    VECTOR_AVAILABLE = False
+    logger.warning(f"Vector engine unavailable: {e}")
+
 course_manager = CourseDataManager()
 
 @router.post("/recommendations", response_model=List[Recommendation])
 async def get_recommendations(
     profile: StudentProfile, 
     include_missing_prereqs: bool = False,
+    use_vector: bool = True,
+    mode: str = "advanced",
     db: Session = Depends(get_db)
 ):
-    """Get AI-powered course recommendations for a student with prerequisite validation"""
+    """Get course recommendations using vector similarity or AI with prerequisite validation"""
     
     try:
+        # Prioritize vector recommendations if available
+        if use_vector and VECTOR_AVAILABLE:
+            try:
+                logger.info(f"Using vector recommendations (mode: {mode})")
+                recommendations = await _get_vector_recommendations(profile, mode, db)
+                if recommendations:
+                    return recommendations
+                else:
+                    logger.warning("Vector recommendations returned no results, falling back to AI")
+            except Exception as e:
+                logger.warning(f"Vector recommendations failed: {e}, falling back to AI")
+        
+        # Fallback to AI recommendations
         # Get relevant courses from database
         relevant_courses = _get_relevant_courses_for_profile(profile, db)
         
@@ -444,3 +470,78 @@ def _get_fallback_explanation(course: Course, profile: StudentProfile) -> dict:
         "prerequisite_analysis": f"Prerequisites: {course.prerequisites or 'None'}",
         "career_relevance": "Relevant for your academic and career development."
     }
+
+async def _get_vector_recommendations(profile: StudentProfile, mode_str: str, db: Session) -> List[Recommendation]:
+    """Get recommendations using vector similarity engine"""
+    
+    try:
+        # Parse recommendation mode
+        mode_mapping = {
+            "basic": RecommendationMode.BASIC,
+            "advanced": RecommendationMode.ADVANCED,
+            "super_advanced": RecommendationMode.SUPER_ADVANCED
+        }
+        mode = mode_mapping.get(mode_str.lower(), RecommendationMode.ADVANCED)
+        
+        # Create recommendation context
+        context = RecommendationContext(
+            student_year=profile.year,
+            favorite_courses=profile.completed_courses or [],  # Use completed courses as favorites
+            interests=profile.interests or [],
+            program=profile.program,
+            gpa=profile.gpa
+        )
+        
+        # Generate vector recommendations
+        vector_recommendations = vector_engine.generate_recommendations(
+            context=context,
+            mode=mode,
+            top_k=10
+        )
+        
+        if not vector_recommendations:
+            logger.warning("Vector engine returned no recommendations")
+            return []
+        
+        # Convert to API format
+        recommendations = []
+        for vector_rec in vector_recommendations:
+            # Convert SQLAlchemy Course to Pydantic Course
+            from app.models.course import Course as PydanticCourse
+            pydantic_course = PydanticCourse(
+                code=vector_rec.course.code,
+                title=vector_rec.course.title,
+                description=vector_rec.course.description,
+                credits=vector_rec.course.credits,
+                prerequisites=vector_rec.course.prerequisites,
+                corequisites=vector_rec.course.corequisites,
+                antirequisites=vector_rec.course.antirequisites,
+                terms_offered=[],  # Simplified for now
+                department=vector_rec.course.department,
+                level=vector_rec.course.level
+            )
+            
+            # Create enhanced reasoning with multi-dimensional scores
+            enhanced_reasoning = vector_rec.reasoning
+            if mode != RecommendationMode.BASIC:
+                score_details = f" (Similarity: {vector_rec.similarity_score:.2f}"
+                if vector_rec.serendipity_factor > 0.1:
+                    score_details += f", Discovery: {vector_rec.serendipity_factor:.2f}"
+                if vector_rec.academic_progression > 0.1:
+                    score_details += f", Progression: {vector_rec.academic_progression:.2f}"
+                score_details += ")"
+                enhanced_reasoning += score_details
+            
+            recommendation = Recommendation(
+                course=pydantic_course,
+                confidence=vector_rec.confidence,
+                reasoning=enhanced_reasoning
+            )
+            recommendations.append(recommendation)
+        
+        logger.info(f"Generated {len(recommendations)} vector recommendations using {mode.value} mode")
+        return recommendations
+        
+    except Exception as e:
+        logger.error(f"Vector recommendation generation failed: {e}")
+        raise
